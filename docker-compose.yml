@@ -1,3 +1,9 @@
+x-backend-env: &backend-env
+  ENVIRONMENT: development
+  DATABASE_URL: postgresql+asyncpg://hookhaven:hookhaven@db:5432/hookhaven
+  REDIS_URL: redis://redis:6379/0
+  JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-dev-only-secret}
+
 services:
   db:
     image: postgres:16-alpine
@@ -22,15 +28,19 @@ services:
       timeout: 3s
       retries: 10
 
-  api:
+  migrate:
     build: ./backend
-    environment:
-      ENVIRONMENT: development
-      DATABASE_URL: postgresql+asyncpg://hookhaven:hookhaven@db:5432/hookhaven
-      REDIS_URL: redis://redis:6379/0
-    ports: ["8000:8000"]
+    command: ["alembic", "upgrade", "head"]
+    environment: *backend-env
     depends_on:
       db: {condition: service_healthy}
+
+  api:
+    build: ./backend
+    environment: *backend-env
+    ports: ["8000:8000"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
 
 volumes:

@@ -1,4 +1,4 @@
-.PHONY: install lint format typecheck test check up down
+.PHONY: migrate install lint format typecheck test check up down
 
 install:
 	cd backend && pip install -e ".[dev]"
@@ -16,6 +16,9 @@ test:
 	cd backend && pytest
 
 check: lint typecheck test
+
+migrate:
+	cd backend && alembic upgrade head
 
 up:
 	docker compose up --build

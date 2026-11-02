@@ -1,10 +1,10 @@
+from fastapi import FastAPI
 from httpx import AsyncClient
 
 from app.core.readiness import Check, get_readiness_checks
-from app.main import app
 
 
-def _override(**results: bool) -> None:
+def _override(app: FastAPI, **results: bool) -> None:
     def make(value: bool) -> Check:
         async def check() -> bool:
             return value
@@ -22,15 +22,15 @@ async def test_liveness_does_not_need_dependencies(client: AsyncClient) -> None:
     assert response.json() == {"status": "ok"}
 
 
-async def test_readiness_ok_when_all_checks_pass(client: AsyncClient) -> None:
-    _override(database=True, redis=True)
+async def test_readiness_ok_when_all_checks_pass(app: FastAPI, client: AsyncClient) -> None:
+    _override(app, database=True, redis=True)
     response = await client.get("/ready")
     assert response.status_code == 200
     assert response.json()["checks"] == {"database": True, "redis": True}
 
 
-async def test_readiness_503_when_a_dependency_is_down(client: AsyncClient) -> None:
-    _override(database=True, redis=False)
+async def test_readiness_503_when_a_dependency_is_down(app: FastAPI, client: AsyncClient) -> None:
+    _override(app, database=True, redis=False)
     response = await client.get("/ready")
     assert response.status_code == 503
     assert response.json()["status"] == "degraded"
