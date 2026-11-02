@@ -103,3 +103,8 @@ def parse_api_key_prefix(key: str) -> str | None:
 
 def api_key_matches(key: str, stored_hash: str) -> bool:
     return hmac.compare_digest(hash_api_key(key), stored_hash)
+
+
+def generate_webhook_secret() -> str:
+    """Signing secret handed to the receiver, e.g. `whsec_...`."""
+    return f"whsec_{secrets.token_urlsafe(32)}"

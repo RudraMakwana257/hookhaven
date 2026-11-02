@@ -12,3 +12,15 @@ class InvalidCredentialsError(DomainError):
 
 class InvalidTokenError(DomainError):
     pass
+
+
+class UnsafeUrlError(DomainError):
+    """A destination URL was rejected by the SSRF policy."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class EndpointLimitReachedError(DomainError):
+    pass

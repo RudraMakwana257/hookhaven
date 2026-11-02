@@ -1,3 +1,4 @@
+import ipaddress
 from collections.abc import AsyncIterator
 
 import pytest
@@ -6,14 +7,43 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.api.deps import get_destination_validator
+from app.core.ssrf import DEFAULT_ALLOWED_PORTS, DestinationValidator, UrlPolicy
 from app.db.session import get_session
 from app.main import create_app
 from app.models import Base
 
+PUBLIC_IP = "93.184.216.34"
+FAKE_DNS: dict[str, list[str]] = {
+    "localhost": ["127.0.0.1"],
+    "internal.example": ["10.0.0.5"],
+    "metadata.example": ["169.254.169.254"],
+    "mixed.example": [PUBLIC_IP, "10.0.0.5"],
+    "nxdomain.example": [],
+}
+
+
+async def fake_resolver(host: str, port: int) -> list[str]:
+    """Fake DNS: IP literals resolve to themselves, unknown names are public."""
+    if host in FAKE_DNS:
+        return FAKE_DNS[host]
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return [PUBLIC_IP]
+    return [host]
+
+
+def policy_for_tests() -> UrlPolicy:
+    return UrlPolicy(
+        allowed_schemes=frozenset({"http", "https"}),
+        allowed_ports=DEFAULT_ALLOWED_PORTS,
+        allow_private=False,
+    )
+
 
 @pytest.fixture
-async def app() -> AsyncIterator[FastAPI]:
-    """A fresh app wired to an isolated in-memory database."""
+async def session_maker() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
     engine = create_async_engine(
         "sqlite+aiosqlite://",
         poolclass=StaticPool,
@@ -21,16 +51,24 @@ async def app() -> AsyncIterator[FastAPI]:
     )
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    maker = async_sessionmaker(engine, expire_on_commit=False)
+    yield async_sessionmaker(engine, expire_on_commit=False)
+    await engine.dispose()
+
+
+@pytest.fixture
+async def app(session_maker: async_sessionmaker[AsyncSession]) -> FastAPI:
+    """A fresh app wired to an isolated in-memory database and a fake DNS resolver."""
 
     async def override_session() -> AsyncIterator[AsyncSession]:
-        async with maker() as session:
+        async with session_maker() as session:
             yield session
 
     application = create_app()
     application.dependency_overrides[get_session] = override_session
-    yield application
-    await engine.dispose()
+    application.dependency_overrides[get_destination_validator] = lambda: DestinationValidator(
+        policy_for_tests(), fake_resolver
+    )
+    return application
 
 
 @pytest.fixture

@@ -4,7 +4,7 @@ Webhook delivery and event reliability platform. Register endpoints, send events
 and Hookhaven delivers them with signed requests, automatic retries (exponential
 backoff), a dead-letter queue and manual replay.
 
-**Status:** Phases 1-2 (foundation, auth) complete. See the roadmap below.
+**Status:** Phases 1-3 (foundation, auth, endpoints + SSRF protection) complete. See the roadmap below.
 
 ## Stack
 FastAPI · PostgreSQL · Redis · Python workers · Next.js · Docker
@@ -29,16 +29,20 @@ make check         # ruff, mypy (strict), pytest
 | GET | `/v1/auth/me` | Bearer JWT |
 | POST/GET | `/v1/api-keys` | Bearer JWT |
 | DELETE | `/v1/api-keys/{id}` (revoke) | Bearer JWT |
+| POST/GET | `/v1/endpoints` | Bearer JWT **or** `X-API-Key` |
+| GET/PATCH/DELETE | `/v1/endpoints/{id}` | Bearer JWT or `X-API-Key` |
+| POST | `/v1/endpoints/{id}/rotate-secret` | Bearer JWT or `X-API-Key` |
 
 Interactive docs at `/docs`.
 
 ## Design
-See [`docs/adr`](docs/adr) for architecture decisions.
+- Architecture decisions: [`docs/adr`](docs/adr)
+- SSRF threat model and controls: [`docs/security/ssrf.md`](docs/security/ssrf.md)
 
 ## Roadmap
 - [x] 1. Scaffold, config, structured logging, health/readiness, Docker, CI
 - [x] 2. Models + migrations, JWT auth, API keys
-- [ ] 3. Endpoint CRUD + SSRF protection
+- [x] 3. Endpoint CRUD + SSRF protection
 - [ ] 4. Event ingestion + idempotency
 - [ ] 5. Worker: signed delivery + attempt log
 - [ ] 6. Retry/backoff, DLQ, replay, lease recovery
