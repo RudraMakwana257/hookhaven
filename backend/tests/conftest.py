@@ -1,11 +1,12 @@
 import ipaddress
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
 
 from app.api.deps import get_delivery_queue, get_destination_validator
 from app.core.ssrf import DEFAULT_ALLOWED_PORTS, DestinationValidator, UrlPolicy
@@ -45,12 +46,18 @@ def policy_for_tests() -> UrlPolicy:
 
 
 @pytest.fixture
-async def session_maker() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
-    engine = create_async_engine(
-        "sqlite+aiosqlite://",
-        poolclass=StaticPool,
-        connect_args={"check_same_thread": False},
-    )
+async def session_maker(tmp_path: Path) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """File-backed SQLite with real, separate connections (so concurrent workers behave like
+    they would against Postgres), WAL mode and a busy timeout to serialise writers."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _configure(dbapi_connection: object, _record: object) -> None:
+        cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=10000")
+        cursor.close()
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield async_sessionmaker(engine, expire_on_commit=False)

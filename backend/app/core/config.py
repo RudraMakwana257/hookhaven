@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     max_endpoints_per_user: int = 20
     max_event_payload_bytes: int = 256 * 1024
 
+    # Delivery worker
+    worker_concurrency: int = 10
+    delivery_timeout_seconds: float = 10.0
+    delivery_lease_seconds: int = 60
+    delivery_max_attempts: int = 7  # 1 initial attempt + 6 retries
+
     @model_validator(mode="after")
     def _validate_secrets(self) -> Self:
         keys = [k.strip() for k in self.encryption_keys.split(",") if k.strip()]
@@ -46,6 +52,13 @@ class Settings(BaseSettings):
                 Fernet(key)
             except ValueError:
                 raise ValueError("ENCRYPTION_KEYS must be comma-separated Fernet keys") from None
+
+        # send_webhook's overall deadline is 2x the timeout; the lease must outlive it, otherwise
+        # another worker could be handed a delivery that is still in flight.
+        if self.delivery_lease_seconds <= 2 * self.delivery_timeout_seconds + 5:
+            raise ValueError("DELIVERY_LEASE_SECONDS must exceed 2x DELIVERY_TIMEOUT_SECONDS + 5")
+        if self.delivery_max_attempts < 1 or self.worker_concurrency < 1:
+            raise ValueError("DELIVERY_MAX_ATTEMPTS and WORKER_CONCURRENCY must be >= 1")
 
         if self.environment == "production":
             if self.jwt_secret == _INSECURE_DEFAULT_SECRET or len(self.jwt_secret) < 32:

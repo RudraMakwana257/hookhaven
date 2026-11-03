@@ -43,5 +43,15 @@ services:
       migrate: {condition: service_completed_successfully}
       redis: {condition: service_healthy}
 
+  worker:
+    build: ./backend
+    command: ["python", "-m", "app.workers"]
+    environment:
+      <<: *backend-env
+      ALLOW_PRIVATE_DESTINATIONS: ${ALLOW_PRIVATE_DESTINATIONS:-false}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+
 volumes:
   pgdata:

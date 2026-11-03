@@ -39,3 +39,20 @@ class EventOut(BaseModel):
 class EventDetail(EventOut):
     payload: dict[str, Any]
     deliveries: list[DeliveryOut]
+
+
+class AttemptOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    attempt_number: int
+    started_at: datetime
+    duration_ms: int
+    success: bool
+    status_code: int | None
+    error: str | None
+    response_snippet: str | None
+
+
+class DeliveryDetail(DeliveryOut):
+    event_id: uuid.UUID
+    attempts: list[AttemptOut]

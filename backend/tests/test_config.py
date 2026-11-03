@@ -41,3 +41,9 @@ def test_production_refuses_default_jwt_secret_and_encryption_key() -> None:
 
 def test_development_defaults_boot() -> None:
     assert Settings(_env_file=None).environment == "development"
+
+
+def test_lease_must_outlive_the_delivery_deadline() -> None:
+    with pytest.raises(ValueError, match="DELIVERY_LEASE_SECONDS"):
+        Settings(_env_file=None, delivery_timeout_seconds=30, delivery_lease_seconds=60)
+    Settings(_env_file=None, delivery_timeout_seconds=30, delivery_lease_seconds=120)

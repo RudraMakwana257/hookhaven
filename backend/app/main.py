@@ -5,6 +5,7 @@ from fastapi import APIRouter, FastAPI
 
 from app.api.api_keys import router as api_keys_router
 from app.api.auth import router as auth_router
+from app.api.deliveries import router as deliveries_router
 from app.api.endpoints import router as endpoints_router
 from app.api.events import router as events_router
 from app.api.health import router as health_router
@@ -39,6 +40,7 @@ def create_app() -> FastAPI:
     v1.include_router(api_keys_router)
     v1.include_router(endpoints_router)
     v1.include_router(events_router)
+    v1.include_router(deliveries_router)
     app.include_router(v1)
     return app
 
