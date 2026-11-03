@@ -24,3 +24,11 @@ class UnsafeUrlError(DomainError):
 
 class EndpointLimitReachedError(DomainError):
     pass
+
+
+class IdempotencyConflictError(DomainError):
+    """An Idempotency-Key was reused with a different request payload."""
+
+
+class PayloadTooLargeError(DomainError):
+    pass

@@ -1,13 +1,11 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, String, Text, Uuid, func, true
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, Uuid, func, true
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-
-JsonList = JSON().with_variant(JSONB(), "postgresql")
+from app.db.types import JsonType
 
 
 class Endpoint(Base):
@@ -23,7 +21,7 @@ class Endpoint(Base):
     description: Mapped[str | None] = mapped_column(String(200), nullable=True)
     # Fernet-encrypted: we need the plaintext to sign requests, so it cannot be hashed.
     secret_encrypted: Mapped[str] = mapped_column(Text)
-    event_types: Mapped[list[str]] = mapped_column(JsonList, default=list)
+    event_types: Mapped[list[str]] = mapped_column(JsonType, default=list)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

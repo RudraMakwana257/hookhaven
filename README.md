@@ -4,7 +4,7 @@ Webhook delivery and event reliability platform. Register endpoints, send events
 and Hookhaven delivers them with signed requests, automatic retries (exponential
 backoff), a dead-letter queue and manual replay.
 
-**Status:** Phases 1-3 (foundation, auth, endpoints + SSRF protection) complete. See the roadmap below.
+**Status:** Phases 1-4 (foundation, auth, endpoints + SSRF protection, event ingestion) complete. See the roadmap below.
 
 ## Stack
 FastAPI · PostgreSQL · Redis · Python workers · Next.js · Docker
@@ -32,6 +32,8 @@ make check         # ruff, mypy (strict), pytest
 | POST/GET | `/v1/endpoints` | Bearer JWT **or** `X-API-Key` |
 | GET/PATCH/DELETE | `/v1/endpoints/{id}` | Bearer JWT or `X-API-Key` |
 | POST | `/v1/endpoints/{id}/rotate-secret` | Bearer JWT or `X-API-Key` |
+| POST | `/v1/events` (supports `Idempotency-Key`) | Bearer JWT or `X-API-Key` |
+| GET | `/v1/events`, `/v1/events/{id}` | Bearer JWT or `X-API-Key` |
 
 Interactive docs at `/docs`.
 
@@ -43,7 +45,7 @@ Interactive docs at `/docs`.
 - [x] 1. Scaffold, config, structured logging, health/readiness, Docker, CI
 - [x] 2. Models + migrations, JWT auth, API keys
 - [x] 3. Endpoint CRUD + SSRF protection
-- [ ] 4. Event ingestion + idempotency
+- [x] 4. Event ingestion + idempotency
 - [ ] 5. Worker: signed delivery + attempt log
 - [ ] 6. Retry/backoff, DLQ, replay, lease recovery
 - [ ] 7. Rate limiting, metrics

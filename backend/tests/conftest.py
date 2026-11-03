@@ -7,11 +7,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
-from app.api.deps import get_destination_validator
+from app.api.deps import get_delivery_queue, get_destination_validator
 from app.core.ssrf import DEFAULT_ALLOWED_PORTS, DestinationValidator, UrlPolicy
 from app.db.session import get_session
 from app.main import create_app
 from app.models import Base
+
+from .fakes import FakeQueue
 
 PUBLIC_IP = "93.184.216.34"
 FAKE_DNS: dict[str, list[str]] = {
@@ -56,7 +58,12 @@ async def session_maker() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
 
 
 @pytest.fixture
-async def app(session_maker: async_sessionmaker[AsyncSession]) -> FastAPI:
+def queue() -> FakeQueue:
+    return FakeQueue()
+
+
+@pytest.fixture
+async def app(session_maker: async_sessionmaker[AsyncSession], queue: FakeQueue) -> FastAPI:
     """A fresh app wired to an isolated in-memory database and a fake DNS resolver."""
 
     async def override_session() -> AsyncIterator[AsyncSession]:
@@ -68,6 +75,7 @@ async def app(session_maker: async_sessionmaker[AsyncSession]) -> FastAPI:
     application.dependency_overrides[get_destination_validator] = lambda: DestinationValidator(
         policy_for_tests(), fake_resolver
     )
+    application.dependency_overrides[get_delivery_queue] = lambda: queue
     return application
 
 

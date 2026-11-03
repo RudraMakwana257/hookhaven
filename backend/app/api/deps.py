@@ -1,15 +1,17 @@
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings, get_settings
 from app.core.errors import InvalidTokenError
+from app.core.redis import get_redis
 from app.core.security import decode_token
 from app.core.ssrf import DestinationValidator, policy_from_settings
 from app.db.session import get_session
 from app.models import User
+from app.queue.delivery_queue import DeliveryPublisher, DeliveryQueue
 from app.services.api_keys import authenticate_api_key
 from app.services.users import get_user_by_id
 
@@ -79,7 +81,20 @@ def get_destination_validator() -> DestinationValidator:
     return DestinationValidator(policy_from_settings(get_settings()))
 
 
+def get_delivery_queue() -> DeliveryPublisher:
+    return DeliveryQueue(get_redis())
+
+
+async def enforce_content_length(request: Request, settings: SettingsDep) -> None:
+    """Cheap early rejection of oversized bodies. A reverse proxy should enforce this too."""
+    declared = request.headers.get("content-length")
+    # Envelope overhead (type, braces) is small; the exact payload limit is enforced later.
+    if declared and declared.isdigit() and int(declared) > settings.max_event_payload_bytes + 1024:
+        raise HTTPException(413, "Request body too large")
+
+
 CurrentUser = Annotated[User, Depends(get_current_user)]
 ApiKeyUser = Annotated[User, Depends(get_api_key_user)]
 AuthenticatedUser = Annotated[User, Depends(get_authenticated_user)]
 ValidatorDep = Annotated[DestinationValidator, Depends(get_destination_validator)]
+QueueDep = Annotated[DeliveryPublisher, Depends(get_delivery_queue)]

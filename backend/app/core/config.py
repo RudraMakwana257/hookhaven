@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     # Refused in production (see validator).
     allow_private_destinations: bool = False
     max_endpoints_per_user: int = 20
+    max_event_payload_bytes: int = 256 * 1024
 
     @model_validator(mode="after")
     def _validate_secrets(self) -> Self:
