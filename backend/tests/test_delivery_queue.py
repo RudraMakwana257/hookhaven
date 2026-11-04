@@ -4,7 +4,14 @@ from collections.abc import AsyncIterator
 import pytest
 from fakeredis import FakeAsyncRedis
 
-from app.queue.delivery_queue import PROCESSING_KEY, READY_KEY, SCHEDULED_KEY, DeliveryQueue
+from app.queue.delivery_queue import (
+    LOCK_PREFIX,
+    PROCESSING_KEY,
+    READY_KEY,
+    RECONCILED_MARKER_PREFIX,
+    SCHEDULED_KEY,
+    DeliveryQueue,
+)
 
 NOW = 1_800_000_000.0
 
@@ -110,3 +117,29 @@ async def test_an_id_is_never_in_two_places(queue: DeliveryQueue, redis: FakeAsy
         await redis.zcard(PROCESSING_KEY),
     ]
     assert sorted(places) == [0, 0, 1]
+
+
+async def test_enqueue_once_pushes_each_id_only_once_within_the_ttl(
+    queue: DeliveryQueue, redis: FakeAsyncRedis
+) -> None:
+    a, b = uuid.uuid4(), uuid.uuid4()
+    assert await queue.enqueue_once([a, b], dedupe_ttl_seconds=120) == 2
+    assert await queue.enqueue_once([a, b], dedupe_ttl_seconds=120) == 0  # duplicates suppressed
+    c = uuid.uuid4()
+    assert await queue.enqueue_once([a, c], dedupe_ttl_seconds=120) == 1  # only the new one
+    assert (await queue.stats())["ready"] == 3
+    assert 0 < await redis.ttl(f"{RECONCILED_MARKER_PREFIX}{a}") <= 120
+
+
+async def test_enqueue_once_with_nothing_is_a_noop(queue: DeliveryQueue) -> None:
+    assert await queue.enqueue_once([], dedupe_ttl_seconds=60) == 0
+
+
+async def test_lock_is_exclusive_until_it_is_released(
+    queue: DeliveryQueue, redis: FakeAsyncRedis
+) -> None:
+    assert await queue.acquire_lock("job", ttl_seconds=30) is True
+    assert await queue.acquire_lock("job", ttl_seconds=30) is False
+    assert await queue.acquire_lock("other-job", ttl_seconds=30) is True
+    await redis.delete(f"{LOCK_PREFIX}job")
+    assert await queue.acquire_lock("job", ttl_seconds=30) is True

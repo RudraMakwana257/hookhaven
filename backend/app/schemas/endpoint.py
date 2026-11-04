@@ -57,6 +57,9 @@ class EndpointOut(BaseModel):
     description: str | None
     event_types: list[str]
     is_active: bool
+    consecutive_failures: int
+    disabled_at: datetime | None
+    disabled_reason: str | None
     created_at: datetime
     updated_at: datetime
 

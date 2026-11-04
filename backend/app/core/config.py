@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     delivery_lease_seconds: int = 60
     delivery_max_attempts: int = 7  # 1 initial attempt + 6 retries
 
+    # Reconciler: re-enqueue pending deliveries the queue has lost track of
+    reconcile_interval_seconds: float = 30.0
+    reconcile_grace_seconds: int = 120  # how overdue a delivery must be before we step in
+    reconcile_batch_size: int = 500
+
+    # Endpoint is auto-disabled after this many consecutive dead deliveries (no success between)
+    endpoint_disable_threshold: int = 10
+
     @model_validator(mode="after")
     def _validate_secrets(self) -> Self:
         keys = [k.strip() for k in self.encryption_keys.split(",") if k.strip()]
@@ -57,8 +65,16 @@ class Settings(BaseSettings):
         # another worker could be handed a delivery that is still in flight.
         if self.delivery_lease_seconds <= 2 * self.delivery_timeout_seconds + 5:
             raise ValueError("DELIVERY_LEASE_SECONDS must exceed 2x DELIVERY_TIMEOUT_SECONDS + 5")
-        if self.delivery_max_attempts < 1 or self.worker_concurrency < 1:
-            raise ValueError("DELIVERY_MAX_ATTEMPTS and WORKER_CONCURRENCY must be >= 1")
+        if (
+            min(
+                self.delivery_max_attempts, self.worker_concurrency, self.endpoint_disable_threshold
+            )
+            < 1
+        ):
+            raise ValueError(
+                "DELIVERY_MAX_ATTEMPTS, WORKER_CONCURRENCY and ENDPOINT_DISABLE_THRESHOLD "
+                "must be >= 1"
+            )
 
         if self.environment == "production":
             if self.jwt_secret == _INSECURE_DEFAULT_SECRET or len(self.jwt_secret) < 32:

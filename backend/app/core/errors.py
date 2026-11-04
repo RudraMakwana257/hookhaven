@@ -32,3 +32,13 @@ class IdempotencyConflictError(DomainError):
 
 class PayloadTooLargeError(DomainError):
     pass
+
+
+class DeliveryNotReplayableError(DomainError):
+    def __init__(self, status: str) -> None:
+        super().__init__(status)
+        self.status = status
+
+
+class EndpointDisabledError(DomainError):
+    pass

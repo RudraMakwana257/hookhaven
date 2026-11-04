@@ -1,9 +1,8 @@
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from datetime import timedelta
-from typing import Any
 
 import httpx
 import pytest
@@ -12,139 +11,17 @@ from httpx import AsyncClient
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.config import Settings
 from app.core.signing import verify_signature
-from app.core.time import utcnow
 from app.models import Delivery, DeliveryAttempt, Endpoint
 from app.queue.delivery_queue import SCHEDULED_KEY, DeliveryQueue
 from app.workers.delivery_worker import Worker
 
-from .conftest import PUBLIC_IP, fake_resolver, policy_for_tests
+from .conftest import PUBLIC_IP, register_and_login
+from .support import EMPTY, Clock, Receiver, get_delivery, setup_deliveries, wait_until
 
-URL = "https://hooks.example.com/in"
-EMPTY = {"ready": 0, "scheduled": 0, "processing": 0}
-
-
-class Clock:
-    """Controllable time, starting just after 'now' so freshly created deliveries are due."""
-
-    def __init__(self) -> None:
-        self.now = utcnow() + timedelta(seconds=60)
-
-    def __call__(self):  # type: ignore[no-untyped-def]
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += timedelta(seconds=seconds)
-
-
-class Receiver:
-    """A scriptable fake webhook receiver behind httpx.MockTransport."""
-
-    def __init__(self) -> None:
-        self.requests: list[httpx.Request] = []
-        self.script: list[int | Exception] = []
-        self.default = 200
-        self.delay = 0.0
-        self.inflight = 0
-        self.max_inflight = 0
-
-    async def handler(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        self.inflight += 1
-        self.max_inflight = max(self.max_inflight, self.inflight)
-        try:
-            if self.delay:
-                await asyncio.sleep(self.delay)
-            outcome = self.script.pop(0) if self.script else self.default
-            if isinstance(outcome, Exception):
-                raise outcome
-            return httpx.Response(outcome, text=f"body-{outcome}")
-        finally:
-            self.inflight -= 1
-
-    @property
-    def transport(self) -> httpx.MockTransport:
-        return httpx.MockTransport(self.handler)
-
-
-@pytest.fixture
-async def redis() -> AsyncIterator[FakeAsyncRedis]:
-    client = FakeAsyncRedis(decode_responses=True)
-    yield client
-    await client.aclose()
-
-
-@pytest.fixture
-def delivery_queue(redis: FakeAsyncRedis) -> DeliveryQueue:
-    return DeliveryQueue(redis)
-
-
-@pytest.fixture
-def clock() -> Clock:
-    return Clock()
-
-
-@pytest.fixture
-def receiver() -> Receiver:
-    return Receiver()
-
-
-@pytest.fixture
-def make_worker(
-    session_maker: async_sessionmaker[AsyncSession],
-    delivery_queue: DeliveryQueue,
-    receiver: Receiver,
-    clock: Clock,
-) -> Callable[..., Worker]:
-    def factory(*, resolver: Any = fake_resolver, **settings: Any) -> Worker:
-        merged = {"delivery_max_attempts": 3, "worker_concurrency": 4, **settings}
-        return Worker(
-            session_factory=session_maker,
-            queue=delivery_queue,
-            settings=Settings(_env_file=None, **merged),
-            policy=policy_for_tests(),
-            resolver=resolver,
-            transport=receiver.transport,
-            clock=clock,
-            rng=lambda: 0.5,  # jitter factor exactly 1.0
-            poll_interval=0.01,
-            maintenance_interval=0.01,
-        )
-
-    return factory
-
-
-async def _setup(
-    client: AsyncClient,
-    headers: dict[str, str],
-    queue: DeliveryQueue,
-    *,
-    events: int = 1,
-) -> tuple[dict[str, Any], dict[str, Any], list[uuid.UUID]]:
-    """Register an endpoint, ingest events, and put their deliveries on the real queue."""
-    endpoint = (await client.post("/v1/endpoints", json={"url": URL}, headers=headers)).json()
-    delivery_ids: list[uuid.UUID] = []
-    event: dict[str, Any] = {}
-    for n in range(events):
-        body = {"type": "order.created", "payload": {"n": n}}
-        event = (await client.post("/v1/events", json=body, headers=headers)).json()
-        delivery_ids += [uuid.UUID(d["id"]) for d in event["deliveries"]]
-    await queue.enqueue(delivery_ids)
-    return endpoint, event, delivery_ids
-
-
-async def _delivery(client: AsyncClient, headers: dict[str, str], delivery_id: uuid.UUID) -> Any:
-    response = await client.get(f"/v1/deliveries/{delivery_id}", headers=headers)
-    assert response.status_code == 200
-    return response.json()
-
-
-async def _wait_until(predicate: Callable[[], Any], limit_seconds: float = 10.0) -> None:
-    """Poll a condition (it depends on DB state, so there is no event to wait on)."""
-    async with asyncio.timeout(limit_seconds):
-        while not await predicate():  # noqa: ASYNC110
-            await asyncio.sleep(0.02)
+_setup = setup_deliveries
+_delivery = get_delivery
+_wait_until = wait_until
 
 
 # ------------------------------------------------------------------ happy path
@@ -603,8 +480,6 @@ async def test_worker_stops_promptly_when_idle(make_worker: Callable[..., Worker
 async def test_delivery_detail_is_private_to_its_owner(
     client: AsyncClient, auth_headers: dict[str, str], delivery_queue: DeliveryQueue
 ) -> None:
-    from .conftest import register_and_login
-
     _, _, [delivery_id] = await _setup(client, auth_headers, delivery_queue)
     other = await register_and_login(client, "other@example.com")
 

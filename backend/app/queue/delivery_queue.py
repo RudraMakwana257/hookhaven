@@ -57,6 +57,22 @@ end
 return #ids
 """
 
+# Push an id only if we have not pushed it recently (marker with TTL). Lets the reconciler run
+# every few seconds without flooding the queue with duplicates while a backlog drains.
+_ENQUEUE_ONCE = """
+local pushed = 0
+for i = 2, #ARGV do
+  if redis.call('SET', KEYS[2] .. ARGV[i], '1', 'NX', 'EX', ARGV[1]) then
+    redis.call('LPUSH', KEYS[1], ARGV[i])
+    pushed = pushed + 1
+  end
+end
+return pushed
+"""
+
+RECONCILED_MARKER_PREFIX = "hookhaven:reconciled:"
+LOCK_PREFIX = "hookhaven:lock:"
+
 
 class DeliveryPublisher(Protocol):
     async def enqueue(self, delivery_ids: Sequence[uuid.UUID]) -> None: ...
@@ -69,6 +85,7 @@ class DeliveryQueue:
         self._schedule_retry = redis.register_script(_SCHEDULE_RETRY)
         self._promote_due = redis.register_script(_PROMOTE_DUE)
         self._reap_expired = redis.register_script(_REAP_EXPIRED)
+        self._enqueue_once = redis.register_script(_ENQUEUE_ONCE)
 
     async def enqueue(self, delivery_ids: Sequence[uuid.UUID]) -> None:
         """Push to the head; consumers pop from the tail, so the queue is FIFO."""
@@ -104,6 +121,23 @@ class DeliveryQueue:
         return int(
             await self._reap_expired(keys=[PROCESSING_KEY, READY_KEY], args=[str(now), str(limit)])
         )
+
+    async def enqueue_once(
+        self, delivery_ids: Sequence[uuid.UUID], *, dedupe_ttl_seconds: int
+    ) -> int:
+        """Like `enqueue`, but skips ids pushed within the last `dedupe_ttl_seconds`."""
+        if not delivery_ids:
+            return 0
+        return int(
+            await self._enqueue_once(
+                keys=[READY_KEY, RECONCILED_MARKER_PREFIX],
+                args=[str(dedupe_ttl_seconds), *(str(d) for d in delivery_ids)],
+            )
+        )
+
+    async def acquire_lock(self, name: str, *, ttl_seconds: int) -> bool:
+        """Best-effort mutual exclusion between worker replicas (SET NX EX)."""
+        return bool(await self._redis.set(f"{LOCK_PREFIX}{name}", "1", nx=True, ex=ttl_seconds))
 
     async def stats(self) -> dict[str, int]:
         return {

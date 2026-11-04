@@ -56,3 +56,7 @@ class AttemptOut(BaseModel):
 class DeliveryDetail(DeliveryOut):
     event_id: uuid.UUID
     attempts: list[AttemptOut]
+
+
+class ReplayResult(BaseModel):
+    replayed: int

@@ -8,6 +8,7 @@ from app.core.crypto import encrypt_secret
 from app.core.errors import EndpointLimitReachedError
 from app.core.security import generate_webhook_secret
 from app.core.ssrf import DestinationValidator
+from app.core.time import utcnow
 from app.models import Endpoint, User
 
 _UPDATABLE_FIELDS = frozenset({"url", "description", "event_types", "is_active"})
@@ -78,6 +79,14 @@ async def update_endpoint(
     for field, value in changes.items():
         if field in _UPDATABLE_FIELDS:
             setattr(endpoint, field, value)
+    if changes.get("is_active") is True:
+        # Re-enabling is a fresh start: forget the failure streak that got it disabled.
+        endpoint.consecutive_failures = 0
+        endpoint.disabled_at = None
+        endpoint.disabled_reason = None
+    elif changes.get("is_active") is False and endpoint.disabled_at is None:
+        endpoint.disabled_at = utcnow()
+        endpoint.disabled_reason = "disabled by user"
     await session.commit()
     await session.refresh(endpoint)  # pick up the server-side `updated_at`
     return endpoint

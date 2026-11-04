@@ -34,6 +34,7 @@ from app.core.ssrf import Resolver, UrlPolicy, system_resolver
 from app.core.time import as_utc, utcnow
 from app.models import Delivery, DeliveryAttempt, DeliveryStatus, Endpoint, Event
 from app.queue.delivery_queue import DeliveryQueue
+from app.workers.reconciler import Reconciler
 from app.workers.retry import next_retry_delay
 
 log = structlog.get_logger(__name__)
@@ -90,6 +91,9 @@ class Worker:
         self._transport = transport
         self._clock = clock
         self._rng = rng
+        self._reconciler = Reconciler(
+            session_factory=session_factory, queue=queue, settings=settings, clock=clock
+        )
         self._poll_interval = poll_interval
         self._maintenance_interval = maintenance_interval
 
@@ -99,6 +103,7 @@ class Worker:
         """Run until `stop` is set. In-flight deliveries finish first (graceful shutdown)."""
         async with asyncio.TaskGroup() as group:
             group.create_task(self._maintenance_loop(stop))
+            group.create_task(self._reconcile_loop(stop))
             for _ in range(self._settings.worker_concurrency):
                 group.create_task(self._consumer_loop(stop))
 
@@ -130,6 +135,16 @@ class Worker:
                 log.warning("redis_unavailable_in_maintenance", exc_info=True)
             await self._sleep_unless_stopped(stop, self._maintenance_interval)
 
+    async def _reconcile_loop(self, stop: asyncio.Event) -> None:
+        while not stop.is_set():
+            try:
+                await self._reconciler.sweep_if_leader()
+            except RedisError:
+                log.warning("redis_unavailable_in_reconciler", exc_info=True)
+            except Exception:
+                log.exception("reconciler_sweep_failed")  # never take the worker down
+            await self._sleep_unless_stopped(stop, self._settings.reconcile_interval_seconds)
+
     # ------------------------------------------------------------------ one job
 
     async def run_once(self) -> bool:
@@ -151,10 +166,11 @@ class Worker:
         return True
 
     async def process(self, delivery_id: uuid.UUID) -> None:
-        attempt_number = await self._reserve_attempt(delivery_id)
-        if attempt_number is None:
+        reserved = await self._reserve_attempt(delivery_id)
+        if reserved is None:
             await self._release_unreserved(delivery_id)
             return
+        attempt_number, cycle_start = reserved
 
         loaded = await self._load(delivery_id)
         if loaded is None:  # event or endpoint deleted in the meantime
@@ -167,15 +183,17 @@ class Worker:
             outcome = AttemptOutcome(
                 success=False, started_at=started, duration_ms=0, error="endpoint is disabled"
             )
-            await self._finalize(delivery_id, attempt_number, outcome, force_dead=True)
+            await self._finalize(
+                delivery_id, endpoint.id, attempt_number, cycle_start, outcome, force_dead=True
+            )
             return
 
         outcome = await self._deliver(delivery_id, attempt_number, event, endpoint)
-        await self._finalize(delivery_id, attempt_number, outcome)
+        await self._finalize(delivery_id, endpoint.id, attempt_number, cycle_start, outcome)
 
     # --------------------------------------------------------------- db steps
 
-    async def _reserve_attempt(self, delivery_id: uuid.UUID) -> int | None:
+    async def _reserve_attempt(self, delivery_id: uuid.UUID) -> tuple[int, int] | None:
         """Compare-and-set: only one worker can win attempt N of a delivery.
 
         Winning also pushes `next_attempt_at` out to the lease deadline. That is the in-flight
@@ -194,12 +212,12 @@ class Worker:
                     or_(Delivery.next_attempt_at.is_(None), Delivery.next_attempt_at <= now),
                 )
                 .values(attempt_count=Delivery.attempt_count + 1, next_attempt_at=in_flight_until)
-                .returning(Delivery.attempt_count)
+                .returning(Delivery.attempt_count, Delivery.cycle_start_attempt)
                 .execution_options(synchronize_session=False)
             )
-            attempt_number = result.scalar_one_or_none()
+            row = result.one_or_none()
             await session.commit()
-        return None if attempt_number is None else int(attempt_number)
+        return None if row is None else (int(row.attempt_count), int(row.cycle_start_attempt))
 
     async def _release_unreserved(self, delivery_id: uuid.UUID) -> None:
         """We did not win the reservation. Work out why and tidy the queue."""
@@ -236,7 +254,9 @@ class Worker:
     async def _finalize(
         self,
         delivery_id: uuid.UUID,
+        endpoint_id: uuid.UUID,
         attempt_number: int,
+        cycle_start: int,
         outcome: AttemptOutcome,
         *,
         force_dead: bool = False,
@@ -253,7 +273,9 @@ class Worker:
                 None
                 if force_dead
                 else next_retry_delay(
-                    attempt_number, self._settings.delivery_max_attempts, self._rng
+                    attempt_number - cycle_start,  # budget is per retry cycle (replay resets it)
+                    self._settings.delivery_max_attempts,
+                    self._rng,
                 )
             )
             if delay is None:
@@ -289,8 +311,17 @@ class Worker:
                 )
                 .execution_options(synchronize_session=False)
             )
+            disabled_after = await self._account_endpoint_health(
+                session, endpoint_id, status, outcome, force_dead, now
+            )
             await session.commit()
 
+        if disabled_after is not None:
+            log.warning(
+                "endpoint_auto_disabled",
+                endpoint_id=str(endpoint_id),
+                consecutive_failures=disabled_after,
+            )
         log.info(
             "delivery_attempt",
             attempt=attempt_number,
@@ -304,6 +335,56 @@ class Worker:
             await self._queue.schedule_retry(delivery_id, due_at=retry_due.timestamp())
         else:
             await self._queue.ack(delivery_id)
+
+    async def _account_endpoint_health(
+        self,
+        session: AsyncSession,
+        endpoint_id: uuid.UUID,
+        status: DeliveryStatus,
+        outcome: AttemptOutcome,
+        force_dead: bool,
+        now: datetime,
+    ) -> int | None:
+        """Track consecutive dead deliveries per endpoint; disable it past the threshold.
+
+        Returns the failure count if THIS call disabled the endpoint. Only real delivery
+        failures count: deliveries skipped because the endpoint is already disabled do not.
+        """
+        if outcome.success:
+            await session.execute(
+                update(Endpoint)
+                .where(Endpoint.id == endpoint_id, Endpoint.consecutive_failures > 0)
+                .values(consecutive_failures=0)
+                .execution_options(synchronize_session=False)
+            )
+            return None
+        if status is not DeliveryStatus.DEAD or force_dead:
+            return None
+
+        failures = (
+            await session.execute(
+                update(Endpoint)
+                .where(Endpoint.id == endpoint_id)
+                .values(consecutive_failures=Endpoint.consecutive_failures + 1)
+                .returning(Endpoint.consecutive_failures)
+                .execution_options(synchronize_session=False)
+            )
+        ).scalar_one_or_none()
+        if failures is None or failures < self._settings.endpoint_disable_threshold:
+            return None
+
+        disabled = await session.execute(
+            update(Endpoint)
+            .where(Endpoint.id == endpoint_id, Endpoint.is_active.is_(True))
+            .values(
+                is_active=False,
+                disabled_at=now,
+                disabled_reason=f"{failures} consecutive deliveries failed",
+            )
+            .returning(Endpoint.id)
+            .execution_options(synchronize_session=False)
+        )
+        return int(failures) if disabled.scalar_one_or_none() is not None else None
 
     # ------------------------------------------------------------------- http
 

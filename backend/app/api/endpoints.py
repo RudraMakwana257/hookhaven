@@ -4,11 +4,14 @@ from typing import Annotated
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedUser, SessionDep, SettingsDep, ValidatorDep
-from app.core.errors import EndpointLimitReachedError, UnsafeUrlError
+from app.api.deps import AuthenticatedUser, QueueDep, SessionDep, SettingsDep, ValidatorDep
+from app.core.errors import EndpointDisabledError, EndpointLimitReachedError, UnsafeUrlError
+from app.core.time import utcnow
 from app.models import Endpoint, User
 from app.schemas.endpoint import EndpointCreate, EndpointOut, EndpointUpdate, EndpointWithSecret
-from app.services import endpoints
+from app.schemas.event import ReplayResult
+from app.services import deliveries, endpoints
+from app.services.publishing import publish_best_effort
 
 router = APIRouter(prefix="/endpoints", tags=["endpoints"])
 
@@ -100,3 +103,26 @@ async def rotate_endpoint_secret(
     endpoint = await _get_or_404(session, user, endpoint_id)
     secret = await endpoints.rotate_secret(session, endpoint)
     return EndpointWithSecret(**EndpointOut.model_validate(endpoint).model_dump(), secret=secret)
+
+
+@router.post(
+    "/{endpoint_id}/replay-dead",
+    response_model=ReplayResult,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def replay_dead_deliveries(
+    endpoint_id: uuid.UUID, user: AuthenticatedUser, session: SessionDep, queue: QueueDep
+) -> ReplayResult:
+    """After fixing a receiver: re-send everything that ended up dead-lettered (max 1000)."""
+    try:
+        replayed = await deliveries.replay_dead_for_endpoint(
+            session, user.id, endpoint_id, utcnow()
+        )
+    except EndpointDisabledError:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Endpoint is disabled; re-enable it before replaying"
+        ) from None
+    if replayed is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Endpoint not found")
+    await publish_best_effort(queue, replayed, reason="replay-dead")
+    return ReplayResult(replayed=len(replayed))

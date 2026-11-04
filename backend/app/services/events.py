@@ -5,8 +5,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-import structlog
-from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,8 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import IdempotencyConflictError, PayloadTooLargeError
 from app.models import Delivery, DeliveryStatus, Endpoint, Event, User
 from app.queue.delivery_queue import DeliveryPublisher
-
-log = structlog.get_logger(__name__)
+from app.services.publishing import publish_best_effort
 
 
 @dataclass(frozen=True)
@@ -63,21 +60,6 @@ async def _replay(session: AsyncSession, existing: Event, payload_hash: str) -> 
     if existing.payload_hash != payload_hash:
         raise IdempotencyConflictError
     return IngestResult(existing, await _deliveries_for(session, existing.id), replayed=True)
-
-
-async def _publish_best_effort(
-    queue: DeliveryPublisher, event_id: uuid.UUID, deliveries: list[Delivery]
-) -> None:
-    """Enqueue after commit. A queue outage must not fail an event we already stored."""
-    try:
-        await queue.enqueue([d.id for d in deliveries])
-    except (RedisError, OSError):
-        log.warning(
-            "enqueue_failed_will_be_reconciled",
-            event_id=str(event_id),
-            delivery_count=len(deliveries),
-            exc_info=True,
-        )
 
 
 async def ingest_event(
@@ -152,7 +134,7 @@ async def ingest_event(
             raise
         return await _replay(session, winner, payload_hash)
 
-    await _publish_best_effort(queue, event.id, deliveries)
+    await publish_best_effort(queue, [d.id for d in deliveries], reason="ingest")
     return IngestResult(event, deliveries, replayed=False)
 
 

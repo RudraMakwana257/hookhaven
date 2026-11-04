@@ -1,20 +1,26 @@
 import ipaddress
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
+from fakeredis import FakeAsyncRedis
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.api.deps import get_delivery_queue, get_destination_validator
+from app.core.config import Settings
 from app.core.ssrf import DEFAULT_ALLOWED_PORTS, DestinationValidator, UrlPolicy
 from app.db.session import get_session
 from app.main import create_app
 from app.models import Base
+from app.queue.delivery_queue import DeliveryQueue
+from app.workers.delivery_worker import Worker
 
 from .fakes import FakeQueue
+from .support import Clock, Receiver
 
 PUBLIC_IP = "93.184.216.34"
 FAKE_DNS: dict[str, list[str]] = {
@@ -104,3 +110,53 @@ async def register_and_login(client: AsyncClient, email: str) -> dict[str, str]:
         "/v1/auth/login", json={"email": email, "password": "correct-horse-1"}
     )
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+# ----------------------------------------------------------------- worker fixtures
+
+
+@pytest.fixture
+async def redis() -> AsyncIterator[FakeAsyncRedis]:
+    client = FakeAsyncRedis(decode_responses=True)
+    yield client
+    await client.aclose()
+
+
+@pytest.fixture
+def delivery_queue(redis: FakeAsyncRedis) -> DeliveryQueue:
+    return DeliveryQueue(redis)
+
+
+@pytest.fixture
+def clock() -> Clock:
+    return Clock()
+
+
+@pytest.fixture
+def receiver() -> Receiver:
+    return Receiver()
+
+
+@pytest.fixture
+def make_worker(
+    session_maker: async_sessionmaker[AsyncSession],
+    delivery_queue: DeliveryQueue,
+    receiver: Receiver,
+    clock: Clock,
+) -> Callable[..., Worker]:
+    def factory(*, resolver: Any = fake_resolver, **settings: Any) -> Worker:
+        merged = {"delivery_max_attempts": 3, "worker_concurrency": 4, **settings}
+        return Worker(
+            session_factory=session_maker,
+            queue=delivery_queue,
+            settings=Settings(_env_file=None, **merged),
+            policy=policy_for_tests(),
+            resolver=resolver,
+            transport=receiver.transport,
+            clock=clock,
+            rng=lambda: 0.5,  # jitter factor exactly 1.0
+            poll_interval=0.01,
+            maintenance_interval=0.01,
+        )
+
+    return factory
