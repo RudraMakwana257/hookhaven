@@ -4,6 +4,7 @@ import asyncio
 import signal
 
 import structlog
+from prometheus_client import start_http_server
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -31,7 +32,13 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, stop.set)
 
-    log.info("worker_started", concurrency=settings.worker_concurrency)
+    if settings.worker_metrics_port:
+        start_http_server(settings.worker_metrics_port)  # scraped on the internal network only
+    log.info(
+        "worker_started",
+        concurrency=settings.worker_concurrency,
+        metrics_port=settings.worker_metrics_port,
+    )
     try:
         await worker.run(stop)
     finally:

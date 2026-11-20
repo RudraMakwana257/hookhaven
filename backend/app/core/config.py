@@ -47,6 +47,25 @@ class Settings(BaseSettings):
     reconcile_grace_seconds: int = 120  # how overdue a delivery must be before we step in
     reconcile_batch_size: int = 500
 
+    # Rate limiting (token buckets in Redis). "burst" = bucket size, the rest is the refill rate.
+    rate_limit_enabled: bool = True
+    rate_limit_fail_open: bool = True  # if Redis is down: keep serving (True) or reject (False)
+    rate_limit_api_burst: int = 60
+    rate_limit_api_per_second: float = 20.0
+    rate_limit_ingest_burst: int = 200
+    rate_limit_ingest_per_second: float = 50.0
+    rate_limit_auth_ip_burst: int = 10  # register / login / refresh, per client IP
+    rate_limit_auth_ip_refill_seconds: float = 6.0  # one token back every N seconds
+    rate_limit_login_email_burst: int = 5  # login attempts per account, from any IP
+    rate_limit_login_email_refill_seconds: float = 60.0
+    # How many reverse proxies sit in front of us. 0 = ignore X-Forwarded-For (it is spoofable).
+    trusted_proxy_count: int = 0
+
+    # Prometheus
+    metrics_enabled: bool = True
+    metrics_token: str | None = None  # if set, /metrics requires "Authorization: Bearer <token>"
+    worker_metrics_port: int = 9100  # 0 disables the worker's metrics listener
+
     # Endpoint is auto-disabled after this many consecutive dead deliveries (no success between)
     endpoint_disable_threshold: int = 10
 
@@ -76,6 +95,21 @@ class Settings(BaseSettings):
                 "must be >= 1"
             )
 
+        rates = (
+            self.rate_limit_api_per_second,
+            self.rate_limit_ingest_per_second,
+            self.rate_limit_auth_ip_refill_seconds,
+            self.rate_limit_login_email_refill_seconds,
+        )
+        bursts = (
+            self.rate_limit_api_burst,
+            self.rate_limit_ingest_burst,
+            self.rate_limit_auth_ip_burst,
+            self.rate_limit_login_email_burst,
+        )
+        if min(rates) <= 0 or min(bursts) < 1:
+            raise ValueError("rate limit bursts must be >= 1 and rates/intervals must be > 0")
+
         if self.environment == "production":
             if self.jwt_secret == _INSECURE_DEFAULT_SECRET or len(self.jwt_secret) < 32:
                 raise ValueError("JWT_SECRET must be set to a random value of 32+ characters")
@@ -83,6 +117,10 @@ class Settings(BaseSettings):
                 raise ValueError("ENCRYPTION_KEYS must not use the development default")
             if self.allow_private_destinations:
                 raise ValueError("ALLOW_PRIVATE_DESTINATIONS must be false in production")
+            if self.metrics_enabled and not self.metrics_token:
+                raise ValueError(
+                    "METRICS_TOKEN must be set in production (or METRICS_ENABLED=false)"
+                )
         return self
 
 

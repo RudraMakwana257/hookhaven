@@ -393,7 +393,7 @@ async def test_processes_many_deliveries_concurrently_up_to_the_limit(
     receiver: Receiver,
 ) -> None:
     await _setup(client, auth_headers, delivery_queue, events=12)
-    receiver.delay = 0.05
+    receiver.delay = 0.2
     worker = make_worker(worker_concurrency=4)
     stop = asyncio.Event()
     task = asyncio.create_task(worker.run(stop))

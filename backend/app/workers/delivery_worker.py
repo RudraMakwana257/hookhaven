@@ -28,6 +28,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import Settings
 from app.core.crypto import decrypt_secret
 from app.core.errors import UnsafeUrlError
+from app.core.metrics import (
+    DELIVERIES_FINALIZED,
+    DELIVERY_ATTEMPT_DURATION,
+    DELIVERY_ATTEMPTS,
+    ENDPOINTS_AUTO_DISABLED,
+)
 from app.core.safe_http import send_webhook
 from app.core.signing import SIGNATURE_HEADER, build_signature_header
 from app.core.ssrf import Resolver, UrlPolicy, system_resolver
@@ -52,6 +58,7 @@ class AttemptOutcome:
     status_code: int | None = None
     error: str | None = None
     response_snippet: str | None = None
+    kind: str = "unknown"  # low-cardinality label for metrics
 
 
 def build_envelope(event: Event) -> bytes:
@@ -181,7 +188,11 @@ class Worker:
         if not endpoint.is_active:
             started = self._clock()
             outcome = AttemptOutcome(
-                success=False, started_at=started, duration_ms=0, error="endpoint is disabled"
+                success=False,
+                started_at=started,
+                duration_ms=0,
+                error="endpoint is disabled",
+                kind="endpoint_disabled",
             )
             await self._finalize(
                 delivery_id, endpoint.id, attempt_number, cycle_start, outcome, force_dead=True
@@ -316,7 +327,14 @@ class Worker:
             )
             await session.commit()
 
+        DELIVERY_ATTEMPTS.labels(outcome.kind).inc()
+        if outcome.kind != "endpoint_disabled":
+            DELIVERY_ATTEMPT_DURATION.observe(outcome.duration_ms / 1000)
+        DELIVERIES_FINALIZED.labels(
+            "retry_scheduled" if retry_due is not None else status.value
+        ).inc()
         if disabled_after is not None:
+            ENDPOINTS_AUTO_DISABLED.inc()
             log.warning(
                 "endpoint_auto_disabled",
                 endpoint_id=str(endpoint_id),
@@ -401,7 +419,9 @@ class Worker:
         try:
             secret = decrypt_secret(endpoint.secret_encrypted)
         except InvalidToken:
-            return outcome(success=False, error="cannot decrypt endpoint secret")
+            return outcome(
+                success=False, error="cannot decrypt endpoint secret", kind="config_error"
+            )
 
         body = build_envelope(event)
         headers = {
@@ -424,11 +444,19 @@ class Worker:
                 transport=self._transport,
             )
         except UnsafeUrlError as exc:
-            return outcome(success=False, error=f"blocked by destination policy: {exc.reason}")
+            return outcome(
+                success=False,
+                error=f"blocked by destination policy: {exc.reason}",
+                kind="blocked",
+            )
         except (httpx.TimeoutException, TimeoutError):
-            return outcome(success=False, error="request timed out")
+            return outcome(success=False, error="request timed out", kind="timeout")
         except httpx.HTTPError as exc:
-            return outcome(success=False, error=f"{type(exc).__name__}: {exc}"[:ERROR_LIMIT])
+            return outcome(
+                success=False,
+                error=f"{type(exc).__name__}: {exc}"[:ERROR_LIMIT],
+                kind="network_error",
+            )
 
         ok = 200 <= response.status_code < 300
         return outcome(
@@ -436,6 +464,7 @@ class Worker:
             status_code=response.status_code,
             error=None if ok else f"HTTP {response.status_code}",
             response_snippet=response.body[:SNIPPET_LIMIT] or None,
+            kind="success" if ok else f"http_{response.status_code // 100}xx",
         )
 
 

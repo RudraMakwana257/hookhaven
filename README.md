@@ -4,7 +4,7 @@ Webhook delivery and event reliability platform. Register endpoints, send events
 and Hookhaven delivers them with signed requests, automatic retries (exponential
 backoff), a dead-letter queue and manual replay.
 
-**Status:** Phases 1-6 (foundation, auth, endpoints + SSRF, ingestion, delivery worker, replay + reconciliation) complete. See the roadmap below.
+**Status:** Phases 1-7 (foundation, auth, endpoints + SSRF, ingestion, delivery worker, replay + reconciliation, rate limiting + metrics) complete. See the roadmap below.
 
 ## Stack
 FastAPI · PostgreSQL · Redis · Python workers · Next.js · Docker
@@ -39,10 +39,12 @@ make check         # ruff, mypy (strict), pytest
 | POST | `/v1/deliveries/{id}/replay` | Bearer JWT or `X-API-Key` |
 | POST | `/v1/endpoints/{id}/replay-dead` | Bearer JWT or `X-API-Key` |
 
-Interactive docs at `/docs`.
+Interactive docs at `/docs`. Prometheus metrics at `/metrics` (`make up-monitoring` adds Prometheus on :9090).
+All authenticated routes are rate limited and return `429` + `Retry-After`.
 
 ## Design
 - Architecture decisions: [`docs/adr`](docs/adr)
+- Rate limiting and observability: [`docs/adr/0007`](docs/adr/0007-rate-limiting-and-observability.md), metric catalogue and alerts in [`docs/observability.md`](docs/observability.md)
 - Replay, reconciler, auto-disable: [`docs/adr/0006`](docs/adr/0006-replay-reconciliation-auto-disable.md)
 - Worker guarantees and failure modes: [`docs/adr/0005`](docs/adr/0005-reliable-worker-design.md)
 - Verifying signatures as a receiver: [`docs/webhook-signatures.md`](docs/webhook-signatures.md)
@@ -55,6 +57,6 @@ Interactive docs at `/docs`.
 - [x] 4. Event ingestion + idempotency
 - [x] 5. Worker: signed delivery, attempt log, leases, backoff retries, dead status
 - [x] 6. Manual replay + DLQ listing, reconciler (re-enqueue lost work), endpoint auto-disable
-- [ ] 7. Rate limiting, metrics
+- [x] 7. Rate limiting, Prometheus metrics, security headers
 - [ ] 8. SSE + Next.js dashboard
 - [ ] 9. Docs and deployment

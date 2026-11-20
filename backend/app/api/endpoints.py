@@ -1,10 +1,11 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedUser, QueueDep, SessionDep, SettingsDep, ValidatorDep
+from app.api.limits import limit_api
 from app.core.errors import EndpointDisabledError, EndpointLimitReachedError, UnsafeUrlError
 from app.core.time import utcnow
 from app.models import Endpoint, User
@@ -13,7 +14,7 @@ from app.schemas.event import ReplayResult
 from app.services import deliveries, endpoints
 from app.services.publishing import publish_best_effort
 
-router = APIRouter(prefix="/endpoints", tags=["endpoints"])
+router = APIRouter(prefix="/endpoints", tags=["endpoints"], dependencies=[Depends(limit_api)])
 
 
 def _unsafe(exc: UnsafeUrlError) -> HTTPException:

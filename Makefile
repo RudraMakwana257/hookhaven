@@ -1,4 +1,4 @@
-.PHONY: migrate install lint format typecheck test check up down
+.PHONY: up-monitoring migrate install lint format typecheck test check up down
 
 install:
 	cd backend && pip install -e ".[dev]"
@@ -22,6 +22,9 @@ migrate:
 
 up:
 	docker compose up --build
+
+up-monitoring:
+	docker compose --profile monitoring up --build
 
 down:
 	docker compose down -v

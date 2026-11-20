@@ -1,12 +1,13 @@
 import uuid
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from app.api.deps import CurrentUser, SessionDep
+from app.api.limits import limit_dashboard
 from app.schemas.api_key import ApiKeyCreate, ApiKeyCreated, ApiKeyOut
 from app.services import api_keys
 
-router = APIRouter(prefix="/api-keys", tags=["api-keys"])
+router = APIRouter(prefix="/api-keys", tags=["api-keys"], dependencies=[Depends(limit_dashboard)])
 
 
 @router.post("", response_model=ApiKeyCreated, status_code=status.HTTP_201_CREATED)

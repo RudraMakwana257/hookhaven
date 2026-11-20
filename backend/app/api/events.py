@@ -10,7 +10,9 @@ from app.api.deps import (
     SettingsDep,
     enforce_content_length,
 )
+from app.api.limits import limit_api, limit_ingest
 from app.core.errors import IdempotencyConflictError, PayloadTooLargeError
+from app.core.metrics import EVENTS_INGESTED
 from app.models import Delivery, Event
 from app.schemas.event import DeliveryOut, EventCreate, EventDetail, EventOut
 from app.services import events
@@ -41,7 +43,7 @@ def _detail(event: Event, deliveries: list[Delivery]) -> EventDetail:
     "",
     response_model=EventDetail,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(enforce_content_length)],
+    dependencies=[Depends(enforce_content_length), Depends(limit_ingest)],
 )
 async def ingest_event(
     body: EventCreate,
@@ -70,12 +72,13 @@ async def ingest_event(
             status.HTTP_409_CONFLICT,
             "Idempotency-Key was already used with a different request payload",
         ) from None
+    EVENTS_INGESTED.labels("replayed" if result.replayed else "accepted").inc()
     if result.replayed:
         response.headers["Idempotent-Replayed"] = "true"
     return _detail(result.event, result.deliveries)
 
 
-@router.get("", response_model=list[EventOut])
+@router.get("", response_model=list[EventOut], dependencies=[Depends(limit_api)])
 async def list_events(
     user: AuthenticatedUser,
     session: SessionDep,
@@ -87,7 +90,7 @@ async def list_events(
     return [EventOut.model_validate(row) for row in rows]
 
 
-@router.get("/{event_id}", response_model=EventDetail)
+@router.get("/{event_id}", response_model=EventDetail, dependencies=[Depends(limit_api)])
 async def get_event(
     event_id: uuid.UUID, user: AuthenticatedUser, session: SessionDep
 ) -> EventDetail:

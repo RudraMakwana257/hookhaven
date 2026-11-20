@@ -18,6 +18,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
+from app.core.metrics import RECONCILER_REQUEUED
 from app.core.time import utcnow
 from app.models import Delivery, DeliveryStatus
 from app.queue.delivery_queue import DeliveryQueue
@@ -66,6 +67,7 @@ class Reconciler:
             overdue, dedupe_ttl_seconds=self._settings.reconcile_grace_seconds
         )
         if pushed:
+            RECONCILER_REQUEUED.inc(pushed)
             log.warning(
                 "reconciler_requeued_overdue_deliveries", count=pushed, overdue=len(overdue)
             )

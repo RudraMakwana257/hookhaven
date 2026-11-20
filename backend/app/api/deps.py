@@ -81,6 +81,10 @@ def get_destination_validator() -> DestinationValidator:
     return DestinationValidator(policy_from_settings(get_settings()))
 
 
+def get_queue_inspector() -> DeliveryQueue:
+    return DeliveryQueue(get_redis())
+
+
 def get_delivery_queue() -> DeliveryPublisher:
     return DeliveryQueue(get_redis())
 

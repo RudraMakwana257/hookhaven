@@ -1,16 +1,17 @@
 import uuid
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.api.deps import AuthenticatedUser, QueueDep, SessionDep
+from app.api.limits import limit_api
 from app.core.errors import DeliveryNotReplayableError, EndpointDisabledError
 from app.core.time import utcnow
 from app.schemas.event import AttemptOut, DeliveryDetail, DeliveryOut
 from app.services import deliveries
 from app.services.publishing import publish_best_effort
 
-router = APIRouter(prefix="/deliveries", tags=["deliveries"])
+router = APIRouter(prefix="/deliveries", tags=["deliveries"], dependencies=[Depends(limit_api)])
 
 
 @router.get("", response_model=list[DeliveryOut])

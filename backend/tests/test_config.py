@@ -7,6 +7,7 @@ GOOD = {
     "environment": "production",
     "jwt_secret": "x" * 40,
     "encryption_keys": Fernet.generate_key().decode(),
+    "metrics_token": "m" * 32,
 }
 
 
@@ -47,3 +48,23 @@ def test_lease_must_outlive_the_delivery_deadline() -> None:
     with pytest.raises(ValueError, match="DELIVERY_LEASE_SECONDS"):
         Settings(_env_file=None, delivery_timeout_seconds=30, delivery_lease_seconds=60)
     Settings(_env_file=None, delivery_timeout_seconds=30, delivery_lease_seconds=120)
+
+
+def test_production_requires_a_metrics_token_unless_metrics_are_off() -> None:
+    without = {k: v for k, v in GOOD.items() if k != "metrics_token"}
+    with pytest.raises(ValueError, match="METRICS_TOKEN"):
+        Settings(_env_file=None, **without)  # type: ignore[arg-type]
+    Settings(_env_file=None, metrics_enabled=False, **without)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"rate_limit_api_burst": 0},
+        {"rate_limit_api_per_second": 0},
+        {"rate_limit_auth_ip_refill_seconds": -1},
+    ],
+)
+def test_nonsensical_rate_limits_are_rejected(override: dict[str, float]) -> None:
+    with pytest.raises(ValueError, match="rate limit"):
+        Settings(_env_file=None, **override)  # type: ignore[arg-type]

@@ -10,8 +10,10 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.api.deps import get_delivery_queue, get_destination_validator
+from app.api.deps import get_delivery_queue, get_destination_validator, get_queue_inspector
+from app.api.limits import get_rate_limiter
 from app.core.config import Settings
+from app.core.rate_limit import RateLimiter
 from app.core.ssrf import DEFAULT_ALLOWED_PORTS, DestinationValidator, UrlPolicy
 from app.db.session import get_session
 from app.main import create_app
@@ -76,7 +78,11 @@ def queue() -> FakeQueue:
 
 
 @pytest.fixture
-async def app(session_maker: async_sessionmaker[AsyncSession], queue: FakeQueue) -> FastAPI:
+async def app(
+    session_maker: async_sessionmaker[AsyncSession],
+    queue: FakeQueue,
+    redis: FakeAsyncRedis,
+) -> FastAPI:
     """A fresh app wired to an isolated in-memory database and a fake DNS resolver."""
 
     async def override_session() -> AsyncIterator[AsyncSession]:
@@ -89,6 +95,9 @@ async def app(session_maker: async_sessionmaker[AsyncSession], queue: FakeQueue)
         policy_for_tests(), fake_resolver
     )
     application.dependency_overrides[get_delivery_queue] = lambda: queue
+    # Rate limiting and queue inspection use an isolated in-memory Redis, never a real one.
+    application.dependency_overrides[get_rate_limiter] = lambda: RateLimiter(redis)
+    application.dependency_overrides[get_queue_inspector] = lambda: DeliveryQueue(redis)
     return application
 
 

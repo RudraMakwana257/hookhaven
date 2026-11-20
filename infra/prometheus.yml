@@ -1,0 +1,16 @@
+# Used by the optional `monitoring` compose profile:  docker compose --profile monitoring up
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: hookhaven-api
+    metrics_path: /metrics
+    # If you set METRICS_TOKEN, uncomment:
+    # authorization:
+    #   credentials: <the same token>
+    static_configs:
+      - targets: ["api:8000"]
+
+  - job_name: hookhaven-worker
+    static_configs:
+      - targets: ["worker:9100"]
