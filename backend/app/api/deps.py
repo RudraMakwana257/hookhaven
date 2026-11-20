@@ -12,6 +12,7 @@ from app.core.ssrf import DestinationValidator, policy_from_settings
 from app.db.session import get_session
 from app.models import User
 from app.queue.delivery_queue import DeliveryPublisher, DeliveryQueue
+from app.realtime.bus import EventBus
 from app.services.api_keys import authenticate_api_key
 from app.services.users import get_user_by_id
 
@@ -81,6 +82,10 @@ def get_destination_validator() -> DestinationValidator:
     return DestinationValidator(policy_from_settings(get_settings()))
 
 
+def get_event_bus() -> EventBus:
+    return EventBus(get_redis())
+
+
 def get_queue_inspector() -> DeliveryQueue:
     return DeliveryQueue(get_redis())
 
@@ -102,3 +107,4 @@ ApiKeyUser = Annotated[User, Depends(get_api_key_user)]
 AuthenticatedUser = Annotated[User, Depends(get_authenticated_user)]
 ValidatorDep = Annotated[DestinationValidator, Depends(get_destination_validator)]
 QueueDep = Annotated[DeliveryPublisher, Depends(get_delivery_queue)]
+BusDep = Annotated[EventBus, Depends(get_event_bus)]

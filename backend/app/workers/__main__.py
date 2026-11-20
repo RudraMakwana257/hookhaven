@@ -12,6 +12,7 @@ from app.core.redis import close_redis, get_redis
 from app.core.ssrf import policy_from_settings
 from app.db.session import dispose_engine, get_sessionmaker
 from app.queue.delivery_queue import DeliveryQueue
+from app.realtime.bus import EventBus
 from app.workers.delivery_worker import Worker
 
 
@@ -25,6 +26,7 @@ async def main() -> None:
         queue=DeliveryQueue(get_redis()),
         settings=settings,
         policy=policy_from_settings(settings),
+        bus=EventBus(get_redis()),
     )
 
     stop = asyncio.Event()

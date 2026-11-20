@@ -39,3 +39,77 @@ jobs:
           alembic upgrade head
           alembic check
       - run: pytest
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+          NEXT_TELEMETRY_DISABLED: "1"
+
+  # Boots the real stack (Postgres + Redis + API + worker + a signature-verifying receiver) and walks
+  # the whole product with scripts/e2e_smoke.py. Unit tests use SQLite; this is the Postgres check.
+  e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: hookhaven_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/hookhaven_e2e
+      REDIS_URL: redis://localhost:6379/0
+      ENVIRONMENT: test
+      ALLOW_PRIVATE_DESTINATIONS: "true"   # the receiver is on localhost
+      DELIVERY_MAX_ATTEMPTS: "1"           # a failure dead-letters immediately
+      CORS_ALLOWED_ORIGINS: http://localhost:3000
+      RATE_LIMIT_AUTH_IP_BURST: "50"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+      - run: pip install -e backend httpx
+      - name: Migrate
+        working-directory: backend
+        run: alembic upgrade head
+      - name: Start API, worker and receiver
+        working-directory: backend
+        run: |
+          nohup uvicorn app.main:app --port 8000 > ../api.log 2>&1 &
+          nohup python -m app.workers > ../worker.log 2>&1 &
+          nohup python ../scripts/demo_receiver.py --port 9000 > ../receiver.log 2>&1 &
+          for i in $(seq 1 40); do curl -sf localhost:8000/ready && break; sleep 0.5; done
+      - name: End-to-end smoke test
+        run: python scripts/e2e_smoke.py
+      - name: Logs (on failure)
+        if: failure()
+        run: tail -n 80 api.log worker.log receiver.log

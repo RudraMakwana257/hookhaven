@@ -40,6 +40,8 @@ from app.core.ssrf import Resolver, UrlPolicy, system_resolver
 from app.core.time import as_utc, utcnow
 from app.models import Delivery, DeliveryAttempt, DeliveryStatus, Endpoint, Event
 from app.queue.delivery_queue import DeliveryQueue
+from app.realtime.bus import EventBus, publish_best_effort
+from app.realtime.messages import delivery_updated, endpoint_disabled
 from app.workers.reconciler import Reconciler
 from app.workers.retry import next_retry_delay
 
@@ -87,6 +89,7 @@ class Worker:
         transport: httpx.AsyncBaseTransport | None = None,
         clock: Callable[[], datetime] = utcnow,
         rng: Callable[[], float] = random.random,
+        bus: EventBus | None = None,
         poll_interval: float = 0.5,
         maintenance_interval: float = 1.0,
     ) -> None:
@@ -101,6 +104,7 @@ class Worker:
         self._reconciler = Reconciler(
             session_factory=session_factory, queue=queue, settings=settings, clock=clock
         )
+        self._bus = bus
         self._poll_interval = poll_interval
         self._maintenance_interval = maintenance_interval
 
@@ -195,12 +199,18 @@ class Worker:
                 kind="endpoint_disabled",
             )
             await self._finalize(
-                delivery_id, endpoint.id, attempt_number, cycle_start, outcome, force_dead=True
+                delivery_id,
+                endpoint.id,
+                event,
+                attempt_number,
+                cycle_start,
+                outcome,
+                force_dead=True,
             )
             return
 
         outcome = await self._deliver(delivery_id, attempt_number, event, endpoint)
-        await self._finalize(delivery_id, endpoint.id, attempt_number, cycle_start, outcome)
+        await self._finalize(delivery_id, endpoint.id, event, attempt_number, cycle_start, outcome)
 
     # --------------------------------------------------------------- db steps
 
@@ -266,6 +276,7 @@ class Worker:
         self,
         delivery_id: uuid.UUID,
         endpoint_id: uuid.UUID,
+        event: Event,
         attempt_number: int,
         cycle_start: int,
         outcome: AttemptOutcome,
@@ -333,7 +344,33 @@ class Worker:
         DELIVERIES_FINALIZED.labels(
             "retry_scheduled" if retry_due is not None else status.value
         ).inc()
+        await publish_best_effort(
+            self._bus,
+            event.user_id,
+            delivery_updated(
+                delivery_id=delivery_id,
+                event_id=event.id,
+                endpoint_id=endpoint_id,
+                status=status.value,
+                attempt_count=attempt_number,
+                next_attempt_at=next_attempt_at,
+                last_status_code=outcome.status_code,
+                last_error=outcome.error,
+                attempt={
+                    "attempt_number": attempt_number,
+                    "success": outcome.success,
+                    "status_code": outcome.status_code,
+                    "error": outcome.error,
+                    "duration_ms": outcome.duration_ms,
+                },
+            ),
+        )
         if disabled_after is not None:
+            await publish_best_effort(
+                self._bus,
+                event.user_id,
+                endpoint_disabled(endpoint_id, f"{disabled_after} consecutive deliveries failed"),
+            )
             ENDPOINTS_AUTO_DISABLED.inc()
             log.warning(
                 "endpoint_auto_disabled",

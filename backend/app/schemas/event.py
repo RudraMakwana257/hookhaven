@@ -36,6 +36,10 @@ class EventOut(BaseModel):
     created_at: datetime
 
 
+class EventListItem(EventOut):
+    delivery_counts: dict[str, int]  # {pending, succeeded, dead} for a quick status at a glance
+
+
 class EventDetail(EventOut):
     payload: dict[str, Any]
     deliveries: list[DeliveryOut]

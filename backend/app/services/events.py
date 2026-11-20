@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -165,3 +165,20 @@ async def get_event_with_deliveries(
     if event is None:
         return None
     return event, await _deliveries_for(session, event.id)
+
+
+async def delivery_counts_for(
+    session: AsyncSession, event_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, int]]:
+    """{event_id: {status: n}} for one page of events, in a single query."""
+    if not event_ids:
+        return {}
+    rows = await session.execute(
+        select(Delivery.event_id, Delivery.status, func.count())
+        .where(Delivery.event_id.in_(event_ids))
+        .group_by(Delivery.event_id, Delivery.status)
+    )
+    counts: dict[uuid.UUID, dict[str, int]] = {}
+    for event_id, status, n in rows:
+        counts.setdefault(event_id, {})[status] = n
+    return counts

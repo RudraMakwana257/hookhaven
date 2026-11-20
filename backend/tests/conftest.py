@@ -10,7 +10,12 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.api.deps import get_delivery_queue, get_destination_validator, get_queue_inspector
+from app.api.deps import (
+    get_delivery_queue,
+    get_destination_validator,
+    get_event_bus,
+    get_queue_inspector,
+)
 from app.api.limits import get_rate_limiter
 from app.core.config import Settings
 from app.core.rate_limit import RateLimiter
@@ -19,6 +24,7 @@ from app.db.session import get_session
 from app.main import create_app
 from app.models import Base
 from app.queue.delivery_queue import DeliveryQueue
+from app.realtime.bus import EventBus
 from app.workers.delivery_worker import Worker
 
 from .fakes import FakeQueue
@@ -98,6 +104,7 @@ async def app(
     # Rate limiting and queue inspection use an isolated in-memory Redis, never a real one.
     application.dependency_overrides[get_rate_limiter] = lambda: RateLimiter(redis)
     application.dependency_overrides[get_queue_inspector] = lambda: DeliveryQueue(redis)
+    application.dependency_overrides[get_event_bus] = lambda: EventBus(redis)
     return application
 
 
@@ -153,7 +160,9 @@ def make_worker(
     receiver: Receiver,
     clock: Clock,
 ) -> Callable[..., Worker]:
-    def factory(*, resolver: Any = fake_resolver, **settings: Any) -> Worker:
+    def factory(
+        *, resolver: Any = fake_resolver, bus: EventBus | None = None, **settings: Any
+    ) -> Worker:
         merged = {"delivery_max_attempts": 3, "worker_concurrency": 4, **settings}
         return Worker(
             session_factory=session_maker,
@@ -163,6 +172,7 @@ def make_worker(
             resolver=resolver,
             transport=receiver.transport,
             clock=clock,
+            bus=bus,
             rng=lambda: 0.5,  # jitter factor exactly 1.0
             poll_interval=0.01,
             maintenance_interval=0.01,

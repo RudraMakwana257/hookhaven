@@ -4,7 +4,7 @@ Webhook delivery and event reliability platform. Register endpoints, send events
 and Hookhaven delivers them with signed requests, automatic retries (exponential
 backoff), a dead-letter queue and manual replay.
 
-**Status:** Phases 1-7 (foundation, auth, endpoints + SSRF, ingestion, delivery worker, replay + reconciliation, rate limiting + metrics) complete. See the roadmap below.
+**Status:** Phases 1-8 (API, worker, replay, rate limiting, metrics, **live dashboard**) complete. See the roadmap below.
 
 ## Stack
 FastAPI · PostgreSQL · Redis · Python workers · Next.js · Docker
@@ -34,6 +34,8 @@ make check         # ruff, mypy (strict), pytest
 | POST | `/v1/endpoints/{id}/rotate-secret` | Bearer JWT or `X-API-Key` |
 | POST | `/v1/events` (supports `Idempotency-Key`) | Bearer JWT or `X-API-Key` |
 | GET | `/v1/events`, `/v1/events/{id}` | Bearer JWT or `X-API-Key` |
+| GET | `/v1/stats` (dashboard overview) | Bearer JWT or `X-API-Key` |
+| GET | `/v1/stream` (Server-Sent Events: live updates) | Bearer JWT or `X-API-Key` |
 | GET | `/v1/deliveries?status=dead` (the DLQ), filters + paging | Bearer JWT or `X-API-Key` |
 | GET | `/v1/deliveries/{id}` (with attempt history) | Bearer JWT or `X-API-Key` |
 | POST | `/v1/deliveries/{id}/replay` | Bearer JWT or `X-API-Key` |
@@ -44,6 +46,7 @@ All authenticated routes are rate limited and return `429` + `Retry-After`.
 
 ## Design
 - Architecture decisions: [`docs/adr`](docs/adr)
+- Dashboard and live updates (SSE, CORS): [`docs/adr/0008`](docs/adr/0008-dashboard-and-live-updates.md); frontend guide in [`frontend/README.md`](frontend/README.md)
 - Rate limiting and observability: [`docs/adr/0007`](docs/adr/0007-rate-limiting-and-observability.md), metric catalogue and alerts in [`docs/observability.md`](docs/observability.md)
 - Replay, reconciler, auto-disable: [`docs/adr/0006`](docs/adr/0006-replay-reconciliation-auto-disable.md)
 - Worker guarantees and failure modes: [`docs/adr/0005`](docs/adr/0005-reliable-worker-design.md)
@@ -58,5 +61,5 @@ All authenticated routes are rate limited and return `429` + `Retry-After`.
 - [x] 5. Worker: signed delivery, attempt log, leases, backoff retries, dead status
 - [x] 6. Manual replay + DLQ listing, reconciler (re-enqueue lost work), endpoint auto-disable
 - [x] 7. Rate limiting, Prometheus metrics, security headers
-- [ ] 8. SSE + Next.js dashboard
+- [x] 8. SSE live updates + Next.js dashboard
 - [ ] 9. Docs and deployment

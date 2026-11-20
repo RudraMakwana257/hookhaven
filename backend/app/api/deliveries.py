@@ -3,10 +3,12 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from app.api.deps import AuthenticatedUser, QueueDep, SessionDep
+from app.api.deps import AuthenticatedUser, BusDep, QueueDep, SessionDep
 from app.api.limits import limit_api
 from app.core.errors import DeliveryNotReplayableError, EndpointDisabledError
 from app.core.time import utcnow
+from app.realtime.bus import publish_best_effort as publish_realtime
+from app.realtime.messages import delivery_updated
 from app.schemas.event import AttemptOut, DeliveryDetail, DeliveryOut
 from app.services import deliveries
 from app.services.publishing import publish_best_effort
@@ -59,9 +61,14 @@ async def get_delivery(
     "/{delivery_id}/replay", response_model=DeliveryOut, status_code=status.HTTP_202_ACCEPTED
 )
 async def replay_delivery(
-    delivery_id: uuid.UUID, user: AuthenticatedUser, session: SessionDep, queue: QueueDep
+    delivery_id: uuid.UUID,
+    user: AuthenticatedUser,
+    session: SessionDep,
+    queue: QueueDep,
+    bus: BusDep,
 ) -> DeliveryOut:
     """Re-send a dead delivery with a fresh retry budget (same `Hookhaven-Delivery-Id`)."""
+    user_id = user.id
     try:
         delivery = await deliveries.replay_delivery(session, user.id, delivery_id, utcnow())
     except EndpointDisabledError:
@@ -76,4 +83,18 @@ async def replay_delivery(
     if delivery is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Delivery not found")
     await publish_best_effort(queue, [delivery.id], reason="replay")
+    await publish_realtime(
+        bus,
+        user_id,
+        delivery_updated(
+            delivery_id=delivery.id,
+            event_id=delivery.event_id,
+            endpoint_id=delivery.endpoint_id,
+            status=delivery.status,
+            attempt_count=delivery.attempt_count,
+            next_attempt_at=delivery.next_attempt_at,
+            last_status_code=delivery.last_status_code,
+            last_error=delivery.last_error,
+        ),
+    )
     return DeliveryOut.model_validate(delivery)

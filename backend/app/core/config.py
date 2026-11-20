@@ -61,6 +61,14 @@ class Settings(BaseSettings):
     # How many reverse proxies sit in front of us. 0 = ignore X-Forwarded-For (it is spoofable).
     trusted_proxy_count: int = 0
 
+    # Browser access (the dashboard lives on another origin). Comma-separated, no trailing slash.
+    cors_allowed_origins: str = ""
+
+    # Live updates (Server-Sent Events)
+    sse_max_lifetime_seconds: float = 600.0  # also capped by the access token's remaining life
+    sse_heartbeat_seconds: float = 15.0
+    sse_max_streams_per_user: int = 5
+
     # Prometheus
     metrics_enabled: bool = True
     metrics_token: str | None = None  # if set, /metrics requires "Authorization: Bearer <token>"
@@ -68,6 +76,10 @@ class Settings(BaseSettings):
 
     # Endpoint is auto-disabled after this many consecutive dead deliveries (no success between)
     endpoint_disable_threshold: int = 10
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
 
     @model_validator(mode="after")
     def _validate_secrets(self) -> Self:
@@ -95,6 +107,17 @@ class Settings(BaseSettings):
                 "must be >= 1"
             )
 
+        for origin in self.cors_origins:
+            if origin != "*" and not (
+                origin.startswith(("http://", "https://")) and not origin.endswith("/")
+            ):
+                raise ValueError(f"CORS origin {origin!r} must look like https://app.example.com")
+        if (
+            self.sse_max_streams_per_user < 1
+            or min(self.sse_max_lifetime_seconds, self.sse_heartbeat_seconds) <= 0
+        ):
+            raise ValueError("SSE limits must be positive")
+
         rates = (
             self.rate_limit_api_per_second,
             self.rate_limit_ingest_per_second,
@@ -117,6 +140,8 @@ class Settings(BaseSettings):
                 raise ValueError("ENCRYPTION_KEYS must not use the development default")
             if self.allow_private_destinations:
                 raise ValueError("ALLOW_PRIVATE_DESTINATIONS must be false in production")
+            if "*" in self.cors_origins:
+                raise ValueError("CORS_ALLOWED_ORIGINS must list explicit origins in production")
             if self.metrics_enabled and not self.metrics_token:
                 raise ValueError(
                     "METRICS_TOKEN must be set in production (or METRICS_ENABLED=false)"

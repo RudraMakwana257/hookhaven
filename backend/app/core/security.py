@@ -108,3 +108,13 @@ def api_key_matches(key: str, stored_hash: str) -> bool:
 def generate_webhook_secret() -> str:
     """Signing secret handed to the receiver, e.g. `whsec_...`."""
     return f"whsec_{secrets.token_urlsafe(32)}"
+
+
+def token_seconds_remaining(token: str) -> float | None:
+    """Seconds until a (verified) JWT expires; None if it is not a valid token."""
+    settings = get_settings()
+    try:
+        claims = jwt.decode(token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    except jwt.PyJWTError:
+        return None
+    return float(claims["exp"]) - datetime.now(UTC).timestamp()
